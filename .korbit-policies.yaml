@@ -356,23 +356,106 @@ topics:
       - title: "Rule 4.1.1 - C++17 Standard Conformance and No Language Extensions"
         Severity: Mandatory
         Required_Context: Single-File
-        software_version:  "MISRA C++:2023"
+        software_version: "MISRA C++:2023"
         reference_link: https://www.misra.org.uk
+      
         description: |
-          A conforming program shall be well-formed according to C++17 syntax rules,
-          diagnosable semantic rules, and the one-definition rule as specified by
-          ISO/IEC 14882:2017. Only language and library features defined in C++17
-          are permitted; compiler-specific extensions or non-standard constructs are forbidden.
+          A conforming program shall be well-formed according to C++17 (ISO/IEC 14882:2017).
+          Only language and library features defined by C++17 are permitted; compiler-specific
+          extensions and non-standard constructs are forbidden.
+      
+        rationale: |
+          Constraining code to C++17 improves portability and predictability,
+          and enables reliable static analysis.
+      
+        notes:
+          # ---- What this rule DOES flag (tight scope)
+          flag_when:
+            - "Use of compiler or OS-specific extensions that are not defined by C++17, e.g.:
+               '__attribute__', '__declspec', '__interrupt', 'asm' (inline assembly), vendor builtins,
+               non-standard integer keywords (e.g., '__int128' on unsupported targets), or
+               including non-standard, implementation-internal headers (e.g., '<bits/...>')."
+            - "Direct reliance on non-standard, platform-only globals/APIs without an abstraction
+               (e.g., 'extern char **environ;' or '::_get_environ' guarded only by platform macros),
+               unless wrapped by a portability layer."
+            - "Pragmas or feature macros that enable compiler extensions beyond C++17
+               (unless the code path remains strictly within standard C++)."
+      
+          # ---- What this rule MUST NOT flag (common false-positives)
+          do_not_flag:
+            - "Standard implicit conversions permitted by C++17 (e.g., integral promotions,
+               'int'→'double', array-to-pointer decay in function calls, binding to 'const T&')."
+            - "Standard converting constructors or conversion operators that are not 'explicit'
+               (e.g., 'std::string' from 'const char*', 'std::string_view' from 'const char*' or 'std::string')."
+            - "Explicitly defaulted/deleted special members (e.g., '~T() = default;', 'T(const T&) = delete;')."
+            - "Use of standard attributes (e.g., '[[nodiscard]]', '[[fallthrough]]') and common,
+               standard-conforming pragmas that do not introduce non-standard semantics."
+            - "Type mismatches or missing conversions between **standard** types
+               (these should be handled by conversion-specific rules, not 4.1.1).
+               Example: passing 'std::ostringstream' directly where 'std::string' is required
+               is a conversion error (use '.str()'), not a non-standard extension."
+      
+        detection:
+          requires:
+            - "Evidence of a non-standard token/construct or header (e.g., '__attribute__', '__declspec', 'asm')."
+          optional_context:
+            - "If only feature macros are present (e.g., '_GNU_SOURCE'), do not flag unless a non-standard
+               API or behavior is actually used in the code block."
+          precedence:
+            - "If a more specific rule applies (e.g., conversion/mismatch rules in section 7/9),
+               that rule takes precedence; 4.1.1 should not fire."
+      
         impact: |
-          Enforcing strict C++17 conformance prevents unpredictable behavior,
-          improves portability, and ensures reliable static analysis.
+          Enforcing strict C++17 conformance avoids undefined compiler-specific behavior and
+          keeps the codebase portable across platforms and toolchains.
+      
         code_examples:
-          # C++ examples
+		  # C++ examples
+          # ---------- Non-compliant (extensions) ----------
           - non_compliant: |
-              #warning "declaring an interrupt handler"
-              __interrupt void handler();   // uses compiler-specific extension
-            compliant: |
-              void handler();               // standard C++17 declaration
+              // compiler attribute
+              __attribute__((interrupt)) void isr();
+      
+              // vendor-specific decoration
+              __declspec(align(32)) int x;
+      
+              // inline assembly
+              void f() { asm("nop"); }
+      
+              // non-standard header
+              #include <bits/stdc++.h>
+      
+          # ---------- Compliant (standard constructs) ----------
+          - compliant: |
+              void isr() = delete;                   // standard C++ declaration (no extension)
+              alignas(32) int x = 0;                 // standard alignment
+              void f() { /* no asm */ }
+      
+              #include <array>                       // standard header only
+      
+          # ---------- Compliant (implicit conversions allowed by C++17) ----------
+          - compliant: |
+              int    n = 1;
+              double d = n;                          // standard arithmetic conversion
+      
+              std::string s = "ok";                  // converting ctor is standard
+              std::string_view v = s;                // standard conversion to string_view
+      
+              void g(const std::string&); 
+              g("literal");                          // binds via std::string temporary (standard)
+      
+          # ---------- Borderline examples (to avoid FPs) ----------
+          - compliant: |
+              // stream → string requires explicit extraction; this is NOT a 4.1.1 issue,
+              // it belongs to a conversion/misuse rule.
+              std::ostringstream ss;
+              ss << "msg";
+              auto status = Status(Error::Overflow, ss.str()); // OK: explicit, standard '.str()'
+      
+          - non_compliant: |
+              // POSIX-only global used directly without a portability layer
+              extern char** environ;                 // non-standard: flag under 4.1.1 unless abstracted
+      
 
       - title: "Rule 4.1.2 - Deprecated Features Shall Not Be Used"
         Severity: Mandatory
@@ -1991,50 +2074,104 @@ topics:
                   }
               };
 
-      - title: "Rule 8.1.2 - Variables Should Be Captured Explicitly in a Non‑Transient Lambda"
+      - title: "Rule 8.1.2 - Variables Shall Be Captured Explicitly in a Non-Transient Lambda"
         Severity: Mandatory
         Required_Context: Single-File
-        software_version:  "MISRA C++:2023"
+        software_version: "MISRA C++:2023"
         reference_link: https://www.misra.org.uk
+      
         description: |
-          In a non-transient lambda, every variable accessed from an enclosing scope
-          shall be listed explicitly in the capture list.
+          In a non-transient lambda (i.e., a lambda that may outlive the full-expression
+          in which it is created), every variable accessed from an enclosing scope shall be
+          listed explicitly in the capture list. Implicit capture forms (`[&]`, `[=]`) are
+          prohibited for non-transient lambdas.
+      
+        terminology:
+          transient_lambda: |
+            A lambda that is created and destroyed within the same full-expression,
+            e.g., immediately invoked or passed to an API that does not retain it.
+          non_transient_lambda: |
+            A lambda whose lifetime may extend beyond the current full-expression,
+            e.g., stored in a variable or data structure, returned, or passed to an API
+            that may retain it (callbacks, async queues, event/observer registration, etc.).
+      
+        rationale: |
+          Explicit capture documents dependencies, reduces unintended capture,
+          and prevents lifetime/dangling issues when callables outlive their context.
+      
+        # ---- Where the rule applies
+        flag_when:
+          - "Lambda uses implicit capture (`[&]` or `[=]`) AND any of the following holds:"
+          - "  • The lambda is assigned to a variable or member (e.g., `auto f = [&]{...};`)."
+          - "  • The lambda is returned from a function or stored in a container/`std::function`."
+          - "  • The lambda is passed to an API known to retain it beyond the call (e.g., async
+               dispatch, event registration, long-lived scheduler)."
+          - "  • The lambda is captured by value/reference into another object that outlives the
+               current full-expression."
+      
+        # ---- Guardrails to avoid false positives
+        do_not_flag:
+          - "Transient lambdas used within a single full-expression, such as:"
+          - "  • Immediately invoked lambdas: `auto r = [&]{...}();`"
+          - "  • Passed to standard algorithms that do not retain the callable (e.g., `std::for_each`,
+               `std::transform`, `std::sort`), when called synchronously."
+          - "  • Lambdas used to build a temporary and not stored/returned."
+          - "`[this]` capture in a transient lambda."
+          - "Explicit capture lists, even when capturing by reference: `[&x, &y]`."
+          - "Cases unrelated to capture semantics, such as **type conversions** inside the lambda body
+             or when calling other functions. (This rule does not require explicit type conversions.)"
+      
+        detection:
+          requires:
+            - "Evidence that the lambda may be non-transient (assigned, returned, stored, or passed
+               to a retaining API). Without such evidence, do not flag."
+          heuristics:
+            - "If the lambda’s expression is the direct argument to a function template parameter
+               of type `F`/`Pred`/`UnaryFunction` and the callee is from the standard library
+               algorithms header, treat as transient unless known otherwise."
+            - "If the lambda is forwarded to an API named `addListener`, `register*`, `subscribe`,
+               `post`, `enqueue`, `defer`, or `async`, treat as potentially non-transient."
+      
         impact: |
-          Explicit capture promotes clarity about a lambda’s dependencies, prevents
-          accidental dangling references or unintended captures, and makes code review
-          and maintenance easier.
+          Enforces clarity and safety for lambdas that escape their defining scope,
+          while allowing idiomatic, concise use for short-lived/transient lambdas.
+      
         code_examples:
-          # C++ examples
+          # ---------- Non-compliant: implicit capture in non-transient lambdas ----------
           - non_compliant: |
-              void bar(double val, double min, double max) {
-                  auto f2 = [=]() {
-                      if (val < min) return (val + min) / 2;
-                      if (val > max) return (val + max) / 2;
-                      return val;
-                  };  // f2 may outlive bar() and captures val, min, max implicitly
-              }
+              struct Bus {
+                void subscribe(std::function<void(int)> cb);
+              } bus;
+      
+              int threshold = 10;
+              // 'subscribe' retains the callback -> non-transient
+              bus.subscribe([&](int v) { if (v > threshold) /* ... */; }); // implicit [&] -> violation
+      
           - non_compliant: |
-              struct Speedometer {};
-              void addLoggers(Speedometer s, std::ostream& os) {
-                  s.addObserver([&](double speed) { os << speed; });  
-                  // implicitly captures os (and s) by reference
+              auto make_checker(int limit) {
+                int factor = 2;
+                return [=](int x) { return x * factor > limit; }; // implicit [=] and returned -> violation
               }
-            compliant: |
-              void bar(double val, double min, double max) {
-                  auto f2 = [val, min, max]() {
-                      if (val < min) return (val + min) / 2;
-                      if (val > max) return (val + max) / 2;
-                      return val;
-                  };  // explicit capture of all used variables
-              }
-
-              struct Speedometer {};
-              void addLoggers(Speedometer s, std::ostream& os) {
-                  s.addObserver([&os](double speed) { os << speed; });  
-                  // explicit capture of os only
-                  s.addObserver([](double speed) { std::cout << speed; });  
-                  // no capture needed when only using global std::cout
-              }
+      
+          # ---------- Compliant: explicit capture in non-transient lambdas ----------
+          - compliant: |
+              bus.subscribe([&threshold](int v) { if (v > threshold) /* ... */; });     // explicit by-ref
+              auto make_checker2 = [](int limit) {
+                int factor = 2;
+                return [factor, limit](int x) { return x * factor > limit; };           // explicit by-value
+              };
+      
+          # ---------- Compliant: transient lambdas (allowed to use [&] or [=]) ----------
+          - compliant: |
+              std::vector<int> a{1,2,3}; int acc = 0;
+              std::for_each(a.begin(), a.end(), [&](int x){ acc += x; });   // transient algorithm call
+      
+              int v = 42; auto r = [&]{ return v + 1; }();                  // immediately invoked
+      
+          # ---------- Clarification: conversions inside lambdas are out of scope ----------
+          - compliant: |
+              std::ostringstream ss;
+              auto f = [&ss](int n) { return std::to_string(n) + ss.str(); }; // conversions OK; rule 8.1.2 does not govern this
 
       - title: "Rule 8.2.1 - A Virtual Base Class Shall Only Be Cast to a Derived Class by Means of dynamic_cast"
         Severity: Mandatory
@@ -4224,35 +4361,69 @@ topics:
                   }
               };
               
-      - title: "Rule 15.0.1c - User‑Provided Destructor Definitions Shall Not Be Empty"
+      - title: "Rule 15.0.1c - User-Provided Destructor Definitions Shall Not Be Empty"
         Severity: Mandatory
         Required_Context: Single-File
-        software_version:  "MISRA C++:2023"
+        software_version: "MISRA C++:2023"
         reference_link: https://www.misra.org.uk
+      
         description: |
-          Any user-provided destructor shall contain at least one statement other than an empty compound statement (`{}`) or a null statement (`;`).
+          Any user-provided destructor shall contain at least one statement other than
+          an empty compound statement (`{}`) or a null statement (`;`).
+      
+        # NEW: explicit exclusions + precise detection
+        notes:
+          do_not_flag:
+            - "Explicitly **defaulted** or **deleted** destructors (`~T() = default;`, `~T() = delete;`)."
+            - "Implicitly-declared destructors (no user-provided definition)."
+          flag_when:
+            - "A destructor has a function body and contains **zero** executable statements
+               (ignoring comments, attributes, and whitespace)."
+            - "A destructor body is a single null statement (`;`)."
+        detection:
+          requires:
+            - "is_destructor == true"
+            - "has_function_body == true"
+            - "is_defaulted == false"
+            - "is_deleted == false"
+          logic: |
+            let n = count_non_comment_non_attribute_statements(body);
+            if n == 0 then report_violation();
+      
         impact: |
-          Prevents “phantom” destructors that appear custom but perform no work, which can mislead maintainers and break resource management invariants.
+          Prevents “phantom” destructors that appear custom but perform no work, which can
+          mislead maintainers and break resource-management invariants.
+      
         code_examples:
           # C++ examples
+          # Non-compliant (true empties)
           - non_compliant: |
-              #include <cstdlib>
-
               struct Manager {
-                  void* resource_;
-                  Manager(void* r) : resource_(r) {}
-                  ~Manager() {}   // non-compliant: empty destructor
+                ~Manager() {}                  // empty body
               };
-          - compliant: |
-              #include <cstdlib>
-
-              struct Manager {
-                  void* resource_;
-                  Manager(void* r) : resource_(r) {}
-                  ~Manager() {    // compliant: performs actual cleanup
-                      std::free(resource_);
-                  }
+      
+              struct Logger {
+                ~Logger() noexcept {}          // still empty → violation
               };
+      
+              struct Base {
+                virtual ~Base();
+              };
+              Base::~Base() { /* no-op */ }    // empty definition → violation
+      
+          # Compliant (correct patterns)
+            compliant: |
+              struct RAII {
+                ~RAII() = default;             // explicitly defaulted → allowed
+              };
+      
+              struct Disposer {
+                ~Disposer() { dispose(); }     // has a real statement
+              };
+      
+              struct NoDtor {
+                // no user-provided destructor → implicitly generated → allowed
+              }
               
       - title: "Rule 15.0.1d - Public Base Classes Require Appropriate Destructor Specification"
         Severity: Mandatory
